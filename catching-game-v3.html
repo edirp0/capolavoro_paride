@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CATCH IT — v3</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+:root {
+  --cyan:  #00ffcc;
+  --pink:  #ff2d78;
+  --gold:  #ffd600;
+  --bomb:  #ff4400;
+  --ice:   #88ddff;
+  --poison:#aa00ff;
+  --bg:    #07071a;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  background: var(--bg);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body {
+  background-image:
+    radial-gradient(circle at 15% 25%, #0d1b5a55 0%, transparent 50%),
+    radial-gradient(circle at 85% 75%, #1a0a3a55 0%, transparent 50%),
+    radial-gradient(1px 1px at 10% 20%, #fff4 0%, transparent 100%),
+    radial-gradient(1px 1px at 35% 55%, #fff3 0%, transparent 100%),
+    radial-gradient(1px 1px at 65% 15%, #fff3 0%, transparent 100%),
+    radial-gradient(1px 1px at 80% 80%, #fff2 0%, transparent 100%),
+    radial-gradient(1px 1px at 50% 90%, #fff3 0%, transparent 100%),
+    radial-gradient(1px 1px at 92% 35%, #fff2 0%, transparent 100%);
+}
+
+#wrapper {
+  position: relative;
+  width: 420px; height: 620px;
+  transform-origin: top center;
+}
+
+canvas {
+  display: block;
+  border: 2px solid rgba(0,255,204,0.3);
+  border-radius: 6px;
+  box-shadow: 0 0 30px #00ffcc22, 0 0 80px #00ffcc0e;
+  background: #07071a;
+  -webkit-touch-callout: none;
+}
+
+/* ── Bottoni touch ── */
+#controls {
+  display: none;
+  margin-top: 12px;
+  gap: 20px;
+}
+.btn-arrow {
+  width: 74px; height: 74px;
+  border-radius: 50%;
+  border: 2px solid var(--cyan);
+  background: rgba(0,255,204,0.07);
+  color: var(--cyan);
+  font-size: 30px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 0 14px #00ffcc22;
+  transition: background .08s, transform .08s;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-arrow.pressed,
+.btn-arrow:active {
+  background: rgba(0,255,204,0.22);
+  transform: scale(0.91);
+}
+@media (hover:none) and (pointer:coarse) {
+  #controls { display: flex; }
+}
+</style>
+</head>
+<body>
+
+<div id="wrapper">
+  <canvas id="gameCanvas" width="420" height="620"></canvas>
+</div>
+<div id="controls">
+  <button class="btn-arrow" id="btnLeft"  aria-label="Sinistra">◀</button>
+  <button class="btn-arrow" id="btnRight" aria-label="Destra">▶</button>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+//  CANVAS & SCALING
+// ════════════════════════════════════════════════════════════════
+const wrapper = document.getElementById('wrapper');
+const canvas  = document.getElementById('gameCanvas');
+const ctx     = canvas.getContext('2d');
+const CW = 420, CH = 620;
+
+function scaleCanvas() {
+  const isTouch = window.matchMedia('(hover:none) and (pointer:coarse)').matches;
+  const rH      = isTouch ? 110 : 16;
+  const s       = Math.min(window.innerWidth / CW, (window.innerHeight - rH) / CH, 1);
+  wrapper.style.transform = `scale(${s})`;
+  wrapper.style.marginTop = `${(window.innerHeight - CH * s - rH) / 2}px`;
+}
+window.addEventListener('resize', scaleCanvas);
+scaleCanvas();
+
+// ════════════════════════════════════════════════════════════════
+//  COSTANTI
+// ════════════════════════════════════════════════════════════════
+const PL_SPEED    = 7;
+const VEL_BASE    = 3.0;
+const VEL_INCR    = 0.18;
+const MAX_VITE    = 3;
+const PTS_LEVELUP = 10;   // punti per salire di livello
+
+// Definizione tipi oggetto
+const TIPI = {
+  normale: { prob: 0.52, pts:  1, label:'',   emoji:'',  color:'#00e676', size:[18,26], msg:'' },
+  bonus:   { prob: 0.16, pts:  3, label:'★',  emoji:'⭐', color:'#ffd600', size:[20,24], msg:'+3  BONUS!' },
+  bomba:   { prob: 0.15, pts:  0, label:'💣', emoji:'💣', color:'#ff4400', size:[22,26], msg:'BOMBA! −1 ♥' },
+  gelo:    { prob: 0.09, pts:  0, label:'❄',  emoji:'❄️', color:'#88ddff', size:[20,24], msg:'FREEZE!' },
+  veleno:  { prob: 0.08, pts:  0, label:'☠',  emoji:'☠️', color:'#aa00ff', size:[18,22], msg:'VELENO! ÷2' },
+};
+
+function sorteggiaTipo() {
+  const r = Math.random();
+  let acc = 0;
+  for (const [k, v] of Object.entries(TIPI)) {
+    acc += v.prob;
+    if (r < acc) return k;
+  }
+  return 'normale';
+}
+
+// ════════════════════════════════════════════════════════════════
+//  STATO
+// ════════════════════════════════════════════════════════════════
+// Schermate: START | TUTORIAL | GIOCO | PAUSA | LEVELUP | GAMEOVER | LEADERBOARD
+let stato       = 'START';
+let prevStato   = 'GIOCO';  // per il tasto "riprendi" da pausa
+let punteggio   = 0;
+let highScore   = 0;
+let vite        = MAX_VITE;
+let livello     = 1;
+let keys        = {};
+let particelle  = [];
+let floatTesti  = [];   // testi che salgono brevemente dopo cattura
+let flashTimer  = 0;
+let screenShake = 0;
+let freezeTimer = 0;    // frame in cui il player è congelato
+let freezeVfx   = 0;   // overlay freeze
+let slowTimer   = 0;    // frame rallentamento bonus
+let levelUpTimer= 0;   // frame schermata level up
+let levelUpAnim = 0;   // valore animazione 0→1
+let touchStartX = null;
+let scaleVal    = 1;
+
+// Leaderboard locale (top 5)
+let leaderboard = JSON.parse(localStorage.getItem('catchit_lb') || '[]');
+
+// ════════════════════════════════════════════════════════════════
+//  PLAYER
+// ════════════════════════════════════════════════════════════════
+const player = {
+  x: CW/2 - 42, y: CH - 42,
+  w: 84, h: 14,
+  color: '#00ffcc',
+  frozen: false
+};
+
+// ════════════════════════════════════════════════════════════════
+//  OGGETTI CHE CADONO (array — più oggetti simultanei ai livelli alti)
+// ════════════════════════════════════════════════════════════════
+let items = [];
+
+function creaItem(speedOverride) {
+  const tipo = TIPI[sorteggiaTipo()];
+  const sz   = tipo.size[0] + Math.random() * (tipo.size[1] - tipo.size[0]);
+  return {
+    x:     Math.random() * (CW - sz),
+    y:     -sz - Math.random() * 80,
+    size:  sz,
+    speed: speedOverride || (VEL_BASE + (livello - 1) * 0.5),
+    color: tipo.color,
+    tipo:  Object.keys(TIPI).find(k => TIPI[k] === tipo),
+    label: tipo.label
+  };
+}
+
+function numItemsPerLivello() {
+  // 1 oggetto fino al liv 2, poi uno in più ogni 2 livelli, max 4
+  return Math.min(1 + Math.floor((livello - 1) / 2), 4);
+}
+
+function spawnItems() {
+  items = [];
+  for (let i = 0; i < numItemsPerLivello(); i++) items.push(creaItem());
+}
+
+// ════════════════════════════════════════════════════════════════
+//  INPUT — TASTIERA
+// ════════════════════════════════════════════════════════════════
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if ([' ','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+
+  if (stato === 'START')       { cambiaStato('TUTORIAL'); return; }
+  if (stato === 'TUTORIAL')    { iniziaGioco();           return; }
+  if (stato === 'GAMEOVER')    { cambiaStato('LEADERBOARD'); return; }
+  if (stato === 'LEADERBOARD') { cambiaStato('START');    return; }
+  if (stato === 'LEVELUP')     return; // blocca input durante level up
+  if (stato === 'GIOCO' && (e.key === 'Escape' || e.key === 'p' || e.key === 'P')) {
+    cambiaStato('PAUSA');
+  }
+  if (stato === 'PAUSA' && (e.key === 'Escape' || e.key === 'p' || e.key === 'P' || e.key === ' ')) {
+    cambiaStato('GIOCO');
+  }
+});
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+// ════════════════════════════════════════════════════════════════
+//  INPUT — TOUCH canvas
+// ════════════════════════════════════════════════════════════════
+canvas.addEventListener('touchstart', e => {
+  touchStartX = e.touches[0].clientX;
+  if (stato === 'START')       { cambiaStato('TUTORIAL'); return; }
+  if (stato === 'TUTORIAL')    { iniziaGioco();           return; }
+  if (stato === 'GAMEOVER')    { cambiaStato('LEADERBOARD'); return; }
+  if (stato === 'LEADERBOARD') { cambiaStato('START');    return; }
+  if (stato === 'PAUSA')       { cambiaStato('GIOCO');    return; }
+}, { passive: true });
+
+canvas.addEventListener('touchmove', e => {
+  if (touchStartX === null || stato !== 'GIOCO' || freezeTimer > 0) return;
+  const s  = parseFloat(wrapper.style.transform.replace('scale(','')) || 1;
+  const dx = (e.touches[0].clientX - touchStartX) / s;
+  player.x = Math.max(0, Math.min(CW - player.w, player.x + dx));
+  touchStartX = e.touches[0].clientX;
+}, { passive: true });
+
+canvas.addEventListener('touchend', () => { touchStartX = null; });
+
+// ════════════════════════════════════════════════════════════════
+//  INPUT — BOTTONI FRECCIA
+// ════════════════════════════════════════════════════════════════
+const btnL = document.getElementById('btnLeft');
+const btnR = document.getElementById('btnRight');
+['touchstart','mousedown'].forEach(ev => {
+  btnL.addEventListener(ev, e => {
+    e.preventDefault(); keys['ArrowLeft'] = true; btnL.classList.add('pressed');
+    if (stato !== 'GIOCO') { if(stato==='START') cambiaStato('TUTORIAL'); else if(stato==='TUTORIAL') iniziaGioco(); }
+  }, { passive: false });
+  btnR.addEventListener(ev, e => {
+    e.preventDefault(); keys['ArrowRight'] = true; btnR.classList.add('pressed');
+    if (stato !== 'GIOCO') { if(stato==='START') cambiaStato('TUTORIAL'); else if(stato==='TUTORIAL') iniziaGioco(); }
+  }, { passive: false });
+});
+['touchend','touchcancel','mouseup','mouseleave'].forEach(ev => {
+  btnL.addEventListener(ev, () => { keys['ArrowLeft']  = false; btnL.classList.remove('pressed'); });
+  btnR.addEventListener(ev, () => { keys['ArrowRight'] = false; btnR.classList.remove('pressed'); });
+});
+
+// ════════════════════════════════════════════════════════════════
+//  CAMBIO STATO
+// ════════════════════════════════════════════════════════════════
+function cambiaStato(nuovoStato) {
+  prevStato = stato;
+  stato     = nuovoStato;
+}
+
+function iniziaGioco() {
+  punteggio   = 0;
+  vite        = MAX_VITE;
+  livello     = 1;
+  freezeTimer = 0;
+  slowTimer   = 0;
+  particelle  = [];
+  floatTesti  = [];
+  player.x    = CW/2 - player.w/2;
+  player.frozen = false;
+  spawnItems();
+  cambiaStato('GIOCO');
+}
+
+// ════════════════════════════════════════════════════════════════
+//  LEADERBOARD
+// ════════════════════════════════════════════════════════════════
+function salvaScore() {
+  leaderboard.push({ pts: punteggio, lv: livello, data: new Date().toLocaleDateString('it-IT') });
+  leaderboard.sort((a,b) => b.pts - a.pts);
+  leaderboard = leaderboard.slice(0, 5);
+  localStorage.setItem('catchit_lb', JSON.stringify(leaderboard));
+}
+
+// ════════════════════════════════════════════════════════════════
+//  PARTICELLE
+// ════════════════════════════════════════════════════════════════
+function spawnParticelle(x, y, color, n=12) {
+  for (let i = 0; i < n; i++) {
+    const a = (Math.PI*2/n)*i + Math.random()*0.4;
+    const v = 2.5 + Math.random()*3.5;
+    particelle.push({ x, y, vx: Math.cos(a)*v, vy: Math.sin(a)*v - 2,
+      life:1, decay:0.03+Math.random()*0.025, size:3+Math.random()*4, color });
+  }
+}
+
+function spawnFloat(x, y, text, color) {
+  floatTesti.push({ x, y, text, color, life:1, vy:-1.5 });
+}
+
+function aggiornaParticelle() {
+  for (let i = particelle.length-1; i>=0; i--) {
+    const p = particelle[i];
+    p.x+=p.vx; p.y+=p.vy; p.vy+=0.18; p.life-=p.decay;
+    if (p.life<=0) particelle.splice(i,1);
+  }
+  for (let i = floatTesti.length-1; i>=0; i--) {
+    const t = floatTesti[i];
+    t.y+=t.vy; t.life-=0.025;
+    if (t.life<=0) floatTesti.splice(i,1);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  UPDATE
+// ════════════════════════════════════════════════════════════════
+function update() {
+  if (stato !== 'GIOCO') {
+    if (stato === 'LEVELUP') {
+      levelUpTimer--;
+      levelUpAnim = Math.min(levelUpAnim + 0.06, 1);
+      if (levelUpTimer <= 0) {
+        livello++;
+        spawnItems();
+        cambiaStato('GIOCO');
+        levelUpAnim = 0;
+      }
+    }
+    return;
+  }
+
+  // Timer effetti
+  if (flashTimer  > 0) flashTimer--;
+  if (screenShake > 0) screenShake--;
+  if (freezeVfx   > 0) freezeVfx--;
+  if (freezeTimer > 0) { freezeTimer--; player.frozen = true; }
+  else                  { player.frozen = false; }
+  if (slowTimer   > 0) slowTimer--;
+
+  // Movimento player
+  if (!player.frozen) {
+    if (keys['ArrowLeft']  && player.x > 0)           player.x -= PL_SPEED;
+    if (keys['ArrowRight'] && player.x < CW-player.w) player.x += PL_SPEED;
+  }
+
+  // Velocità globale item (ridotta se bonus slow attivo)
+  const speedMult = slowTimer > 0 ? 0.45 : 1;
+
+  for (let i = items.length-1; i>=0; i--) {
+    const it = items[i];
+    it.y += it.speed * speedMult;
+
+    // Collisione player
+    if (
+      it.y + it.size >= player.y &&
+      it.y           <= player.y + player.h &&
+      it.x + it.size >= player.x &&
+      it.x           <= player.x + player.w
+    ) {
+      gestisciCollisione(it, i);
+      continue;
+    }
+
+    // Item fuori dal fondo
+    if (it.y > CH) {
+      // Solo gli oggetti "normali" e "bonus" tolgono vita se non catturati
+      if (it.tipo === 'normale' || it.tipo === 'bonus') {
+        perdiVita('PERSO!');
+        if (stato === 'GAMEOVER') return;
+      }
+      // bomba/gelo/veleno che cadono non puniscono (non si devono prendere)
+      items.splice(i, 1);
+      items.push(creaItem(it.speed));
+    }
+  }
+
+  // Check level up
+  if (punteggio > 0 && punteggio % PTS_LEVELUP === 0 && stato === 'GIOCO') {
+    const targetLv = Math.floor(punteggio / PTS_LEVELUP) + 1;
+    if (targetLv > livello) {
+      levelUpTimer = 110;
+      cambiaStato('LEVELUP');
+      spawnParticelle(CW/2, CH/2, '#ffd600', 30);
+    }
+  }
+
+  aggiornaParticelle();
+}
+
+function gestisciCollisione(it, idx) {
+  const tipo = TIPI[it.tipo];
+  const cx   = it.x + it.size/2;
+  const cy   = player.y;
+
+  items.splice(idx, 1);
+  items.push(creaItem(it.speed + VEL_INCR));
+
+  switch (it.tipo) {
+    case 'normale':
+      punteggio++;
+      if (punteggio > highScore) highScore = punteggio;
+      spawnParticelle(cx, cy, it.color);
+      spawnFloat(cx, cy - 10, '+1', '#00e676');
+      break;
+
+    case 'bonus':
+      punteggio += 3;
+      if (punteggio > highScore) highScore = punteggio;
+      slowTimer = 180;
+      spawnParticelle(cx, cy, '#ffd600', 20);
+      spawnFloat(cx, cy - 10, '+3 ★', '#ffd600');
+      break;
+
+    case 'bomba':
+      spawnParticelle(cx, cy, '#ff4400', 18);
+      spawnFloat(cx, cy - 10, tipo.msg, '#ff4400');
+      perdiVita('BOMBA!');
+      break;
+
+    case 'gelo':
+      freezeTimer = 90; // ~1.5s a 60fps
+      freezeVfx   = 90;
+      spawnParticelle(cx, cy, '#88ddff', 14);
+      spawnFloat(cx, cy - 10, 'FREEZE!', '#88ddff');
+      break;
+
+    case 'veleno':
+      punteggio = Math.floor(punteggio / 2);
+      screenShake = 14;
+      spawnParticelle(cx, cy, '#aa00ff', 16);
+      spawnFloat(cx, cy - 10, '÷2 ☠', '#aa00ff');
+      flashTimer = 22;
+      break;
+  }
+}
+
+function perdiVita(motivo) {
+  vite--;
+  flashTimer  = 20;
+  screenShake = 12;
+  if (vite <= 0) {
+    salvaScore();
+    cambiaStato('GAMEOVER');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  HELPERS GRAFICI
+// ════════════════════════════════════════════════════════════════
+function roundRect(x,y,w,h,r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+function gText(text, x, y, size, color, blur=12, align='center') {
+  ctx.font      = `${size}px 'Press Start 2P',monospace`;
+  ctx.fillStyle = color;
+  ctx.shadowColor=color; ctx.shadowBlur=blur;
+  ctx.textAlign = align;
+  ctx.fillText(text,x,y);
+  ctx.shadowBlur=0;
+}
+
+function disegnaParticelle() {
+  particelle.forEach(p => {
+    ctx.globalAlpha=p.life;
+    ctx.fillStyle=p.color; ctx.shadowColor=p.color; ctx.shadowBlur=8;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.size*p.life,0,Math.PI*2); ctx.fill();
+  });
+  floatTesti.forEach(t => {
+    ctx.globalAlpha = t.life;
+    gText(t.text, t.x, t.y, 9, t.color, 10);
+  });
+  ctx.globalAlpha=1; ctx.shadowBlur=0;
+}
+
+function disegnaVite(x,y) {
+  for (let i=0; i<MAX_VITE; i++) {
+    ctx.globalAlpha = i<vite ? 1 : 0.18;
+    ctx.font='16px serif';
+    ctx.textAlign='left';
+    ctx.fillText('♥', x+i*22, y);
+  }
+  ctx.globalAlpha=1;
+}
+
+function sfondoGriglia(alpha=0.04) {
+  ctx.strokeStyle=`rgba(0,255,204,${alpha})`;
+  ctx.lineWidth=1;
+  for (let x=0; x<CW; x+=30) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,CH); ctx.stroke(); }
+  for (let y=0; y<CH; y+=30) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(CW,y); ctx.stroke(); }
+}
+
+function pannello(x,y,w,h,r,borderAlpha=0.3) {
+  roundRect(x,y,w,h,r);
+  ctx.fillStyle='rgba(0,255,204,0.05)'; ctx.fill();
+  ctx.strokeStyle=`rgba(0,255,204,${borderAlpha})`; ctx.lineWidth=1.5; ctx.stroke();
+}
+
+function blink() { return Math.floor(Date.now()/550)%2===0; }
+
+// ════════════════════════════════════════════════════════════════
+//  SCHERMATA: START
+// ════════════════════════════════════════════════════════════════
+function drawStart() {
+  // sfondo gradiente
+  const g=ctx.createLinearGradient(0,0,0,CH);
+  g.addColorStop(0,'#0a0a2e'); g.addColorStop(1,'#07071a');
+  ctx.fillStyle=g; ctx.fillRect(0,0,CW,CH);
+  sfondoGriglia(0.04);
+
+  // Linee diagonali decorative
+  ctx.strokeStyle='rgba(0,255,204,0.06)'; ctx.lineWidth=1;
+  for (let i=-CH; i<CW+CH; i+=40) {
+    ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i+CH,CH); ctx.stroke();
+  }
+
+  // Logo
+  gText('CATCH', CW/2, 180, 40, '#00ffcc', 28);
+  gText('IT!',   CW/2, 232, 40, '#ff2d78', 28);
+
+  // Barra decorativa sotto il titolo
+  ctx.fillStyle='rgba(0,255,204,0.15)';
+  ctx.fillRect(CW/2-80, 246, 160, 2);
+
+  // Emoji preview oggetti
+  const emojis = [['⭐','#ffd600','+3'],[' ','#00e676','+1'],['💣','#ff4400','-♥'],['❄️','#88ddff','frz'],['☠️','#aa00ff','÷2']];
+  emojis.forEach(([e,c,l], i) => {
+    const x = 46 + i*66, y = 300;
+    ctx.font='22px serif'; ctx.textAlign='center'; ctx.fillText(e,x,y);
+    ctx.font="6px 'Press Start 2P',monospace"; ctx.fillStyle=c; ctx.fillText(l,x,y+16);
+  });
+
+  // "Tap per iniziare" lampeggiante
+  if (blink()) gText('[ TAP PER INIZIARE ]', CW/2, 390, 8, '#ffffff', 6);
+
+  // High score
+  if (highScore > 0 || leaderboard.length > 0) {
+    const best = leaderboard.length>0 ? leaderboard[0].pts : highScore;
+    gText('RECORD  ' + String(best).padStart(4,'0'), CW/2, 440, 8, '#ffd60088', 6);
+  }
+
+  // versione
+  ctx.font="6px 'Press Start 2P',monospace"; ctx.fillStyle='rgba(255,255,255,0.15)';
+  ctx.textAlign='center'; ctx.fillText('v 3.0', CW/2, CH-14);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SCHERMATA: TUTORIAL
+// ════════════════════════════════════════════════════════════════
+function drawTutorial() {
+  ctx.fillStyle='#07071a'; ctx.fillRect(0,0,CW,CH);
+  sfondoGriglia(0.03);
+
+  pannello(20, 30, CW-40, CH-60, 10);
+
+  gText('COME SI GIOCA', CW/2, 80, 10, '#00ffcc', 12);
+
+  ctx.fillStyle='rgba(0,255,204,0.12)'; ctx.fillRect(30,94,CW-60,2);
+
+  const voci = [
+    ['⭐','#ffd600','+3 PUNTI + RALLENTA TUTTO'],
+    [' ','#00e676','+1 PUNTO (non perderli!)'],
+    ['💣','#ff4400','EVITA! PERDI 1 VITA'],
+    ['❄️','#88ddff','EVITA! CONGELA IL PLAYER'],
+    ['☠️','#aa00ff','EVITA! PUNTEGGIO DIMEZZATO'],
+  ];
+  voci.forEach(([e,c,t], i) => {
+    const y = 135 + i*62;
+    ctx.font='26px serif'; ctx.textAlign='left'; ctx.fillText(e, 44, y);
+    ctx.font="7px 'Press Start 2P',monospace";
+    ctx.fillStyle=c; ctx.shadowColor=c; ctx.shadowBlur=8;
+    ctx.fillText(t, 80, y-6);
+    ctx.shadowBlur=0;
+    ctx.fillStyle='rgba(255,255,255,0.3)';
+    ctx.font="6px 'Press Start 2P',monospace";
+    // breve descrizione aggiuntiva
+    const sub = ['Bonus raro','Cadono veloci!','Non toccarla!','Raccogli solo i verdi','Attenzione!'];
+    ctx.fillText(sub[i], 80, y+10);
+  });
+
+  ctx.fillStyle='rgba(0,255,204,0.08)'; ctx.fillRect(30,CH-100,CW-60,1);
+
+  ctx.font="7px 'Press Start 2P',monospace";
+  ctx.textAlign='center';
+  ctx.fillStyle='rgba(255,255,255,0.4)';
+  ctx.fillText('← → FRECCE O TRASCINA', CW/2, CH-72);
+  ctx.fillText('P  =  PAUSA', CW/2, CH-52);
+
+  if (blink()) gText('[ TAP PER GIOCARE ]', CW/2, CH-22, 8, '#00ffcc', 8);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SCHERMATA: GIOCO
+// ════════════════════════════════════════════════════════════════
+function drawGioco() {
+  const sx = screenShake>0 ? (Math.random()-.5)*6 : 0;
+  const sy = screenShake>0 ? (Math.random()-.5)*6 : 0;
+  ctx.save(); ctx.translate(sx,sy);
+
+  // Sfondo con scia
+  ctx.fillStyle='rgba(7,7,26,0.80)';
+  ctx.fillRect(-10,-10,CW+20,CH+20);
+
+  // Flash rosso
+  if (flashTimer>0) {
+    ctx.fillStyle=`rgba(255,30,30,${flashTimer/20*0.20})`;
+    ctx.fillRect(-10,-10,CW+20,CH+20);
+  }
+
+  // Overlay freeze (blu ghiaccio)
+  if (freezeVfx>0) {
+    ctx.fillStyle=`rgba(100,200,255,${freezeVfx/90*0.12})`;
+    ctx.fillRect(-10,-10,CW+20,CH+20);
+    // bordo ghiaccio
+    ctx.strokeStyle=`rgba(136,221,255,${freezeVfx/90*0.5})`;
+    ctx.lineWidth=6; ctx.strokeRect(2,2,CW-4,CH-4); ctx.lineWidth=1;
+  }
+
+  // Overlay slow (giallo pallido)
+  if (slowTimer>0 && Math.floor(Date.now()/400)%2===0) {
+    ctx.fillStyle='rgba(255,220,0,0.04)';
+    ctx.fillRect(-10,-10,CW+20,CH+20);
+  }
+
+  // ── ITEMS ──
+  items.forEach(it => {
+    ctx.shadowColor=it.color; ctx.shadowBlur=18;
+    ctx.fillStyle=it.color;
+    roundRect(it.x, it.y, it.size, it.size, 4); ctx.fill();
+    // riflesso
+    ctx.shadowBlur=0; ctx.fillStyle='rgba(255,255,255,0.22)';
+    roundRect(it.x+3,it.y+3,it.size*.42,it.size*.42,2); ctx.fill();
+    // label emoji/testo sopra
+    if (it.label) {
+      ctx.font='14px serif'; ctx.textAlign='center';
+      ctx.fillText(it.label, it.x+it.size/2, it.y+it.size/2+5);
+    }
+  });
+
+  // ── PLAYER ──
+  const plColor = player.frozen ? '#88ddff' : '#00ffcc';
+  ctx.shadowColor=plColor; ctx.shadowBlur=22;
+  ctx.fillStyle=plColor;
+  roundRect(player.x,player.y,player.w,player.h,6); ctx.fill();
+  ctx.shadowBlur=0;
+  ctx.fillStyle='rgba(255,255,255,0.28)';
+  roundRect(player.x+6,player.y+2,player.w-12,4,2); ctx.fill();
+
+  // Indicatore freeze sulla barra
+  if (player.frozen) {
+    ctx.font='10px serif'; ctx.textAlign='center';
+    ctx.fillText('❄', player.x+player.w/2, player.y-4);
+  }
+
+  // Linea pericolo tratteggiata
+  ctx.strokeStyle='rgba(255,50,50,0.15)'; ctx.lineWidth=1;
+  ctx.setLineDash([5,8]);
+  ctx.beginPath(); ctx.moveTo(0,player.y+player.h+5); ctx.lineTo(CW,player.y+player.h+5); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // ── PARTICELLE & FLOAT ──
+  disegnaParticelle();
+
+  // ── HUD ──
+  // Punteggio grande
+  ctx.textAlign='left';
+  gText(String(punteggio).padStart(4,'0'), 14, 36, 14, '#00ffcc', 12, 'left');
+
+  // High score
+  ctx.textAlign='right';
+  ctx.font="7px 'Press Start 2P',monospace";
+  ctx.fillStyle='rgba(255,214,0,0.55)';
+  ctx.fillText('BEST '+String(highScore).padStart(4,'0'), CW-12, 24);
+
+  // Livello
+  ctx.textAlign='center';
+  ctx.font="7px 'Press Start 2P',monospace";
+  ctx.fillStyle='rgba(255,255,255,0.22)';
+  ctx.fillText('LV ' + livello, CW/2, 22);
+
+  // Barra progresso livello
+  const progresso = (punteggio % PTS_LEVELUP) / PTS_LEVELUP;
+  ctx.fillStyle='rgba(255,255,255,0.08)';
+  roundRect(CW/2-50,28,100,5,2); ctx.fill();
+  ctx.fillStyle='rgba(0,255,204,0.5)'; ctx.shadowColor='#00ffcc'; ctx.shadowBlur=6;
+  roundRect(CW/2-50,28,100*progresso,5,2); ctx.fill();
+  ctx.shadowBlur=0;
+
+  // Vite
+  disegnaVite(12, 62);
+
+  // Slow timer indicator
+  if (slowTimer>0) {
+    gText('SLOW ×', CW-70, 62, 6, '#ffd600', 6, 'left');
+    ctx.fillStyle='rgba(255,214,0,0.3)';
+    roundRect(CW-70,66,60*(slowTimer/180),4,2); ctx.fill();
+  }
+
+  // Tasto PAUSA piccolo
+  ctx.font="6px 'Press Start 2P',monospace";
+  ctx.fillStyle='rgba(255,255,255,0.18)';
+  ctx.textAlign='right';
+  ctx.fillText('[P] PAUSA', CW-12, CH-12);
+
+  ctx.restore();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SCHERMATA: PAUSA
+// ════════════════════════════════════════════════════════════════
+function drawPausa() {
+  // Sfondo congelato + overlay
+  ctx.fillStyle='rgba(7,7,26,0.92)'; ctx.fillRect(0,0,CW,CH);
+
+  pannello(CW/2-120, CH/2-120, 240, 240, 10);
+
+  gText('PAUSA', CW/2, CH/2-60, 18, '#00ffcc', 18);
+
+  ctx.font="8px 'Press Start 2P',monospace";
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.textAlign='center';
+  ctx.fillText('PUNTI: ' + punteggio, CW/2, CH/2-10);
+  ctx.fillText('LIVELLO: ' + livello,  CW/2, CH/2+14);
+
+  // Cuori
+  ctx.font='18px serif'; ctx.textAlign='center';
+  let cuori='';
+  for(let i=0;i<MAX_VITE;i++) cuori+= i<vite?'♥ ':'♡ ';
+  ctx.fillText(cuori.trim(), CW/2, CH/2+46);
+
+  if (blink()) gText('[ TAP O P PER RIPRENDERE ]', CW/2, CH/2+90, 7, '#00ffcc', 8);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SCHERMATA: LEVEL UP
+// ════════════════════════════════════════════════════════════════
+function drawLevelUp() {
+  ctx.fillStyle='rgba(7,7,26,0.82)'; ctx.fillRect(0,0,CW,CH);
+  disegnaParticelle();
+
+  const scale = 0.5 + levelUpAnim * 0.5;
+  ctx.save();
+  ctx.translate(CW/2, CH/2);
+  ctx.scale(scale, scale);
+  ctx.translate(-CW/2, -CH/2);
+
+  const alpha = levelUpAnim;
+  ctx.globalAlpha=alpha;
+
+  pannello(CW/2-140, CH/2-80, 280, 160, 12, 0.5);
+
+  gText('LEVEL UP!', CW/2, CH/2-20, 20, '#ffd600', 20);
+  gText('LIVELLO ' + (livello+1), CW/2, CH/2+20, 12, '#00ffcc', 14);
+
+  const bonus = numItemsPerLivello()+1>numItemsPerLivello() ?
+    'PIÙ OGGETTI!' : 'PIÙ VELOCITÀ!';
+  ctx.font="7px 'Press Start 2P',monospace"; ctx.textAlign='center';
+  ctx.fillStyle='rgba(255,255,255,0.5)';
+  ctx.fillText(bonus, CW/2, CH/2+50);
+
+  ctx.restore();
+  ctx.globalAlpha=1;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SCHERMATA: GAME OVER
+// ════════════════════════════════════════════════════════════════
+function drawGameOver() {
+  ctx.fillStyle='rgba(7,7,26,0.94)'; ctx.fillRect(0,0,CW,CH);
+  sfondoGriglia(0.025);
+
+  pannello(24, 50, CW-48, CH-100, 12);
+
+  gText('GAME',  CW/2, 130, 28, '#ff2d78', 22);
+  gText('OVER',  CW/2, 170, 28, '#ff2d78', 22);
+
+  ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(50,188,CW-100,1);
+
+  ctx.font="8px 'Press Start 2P',monospace"; ctx.textAlign='center';
+  ctx.fillStyle='rgba(255,255,255,0.55)';
+  ctx.fillText('PUNTEGGIO FINALE', CW/2, 220);
+
+  gText(String(punteggio).padStart(4,'0'), CW/2, 268, 30, '#ffd600', 22);
+
+  ctx.font="7px 'Press Start 2P',monospace";
+  ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.fillText('LIVELLO RAGGIUNTO: ' + livello, CW/2, 300);
+
+  const isRecord = punteggio>0 && punteggio>=highScore;
+  if (isRecord && blink()) {
+    gText('★ NUOVO RECORD! ★', CW/2, 332, 8, '#ffd600', 12);
+  } else if (!isRecord) {
+    ctx.fillStyle='rgba(255,255,255,0.28)';
+    ctx.font="6px 'Press Start 2P',monospace";
+    ctx.fillText('RECORD: '+String(highScore).padStart(4,'0'), CW/2, 332);
+  }
+
+  ctx.fillStyle='rgba(255,255,255,0.12)'; ctx.fillRect(50,348,CW-100,1);
+
+  // Preview top 3 leaderboard
+  ctx.font="7px 'Press Start 2P',monospace"; ctx.fillStyle='rgba(0,255,204,0.6)';
+  ctx.fillText('TOP SCORES', CW/2, 374);
+  leaderboard.slice(0,3).forEach((e,i)=>{
+    const medals=['🥇','🥈','🥉'];
+    ctx.font='12px serif'; ctx.fillText(medals[i], CW/2-70, 398+i*22);
+    ctx.font="7px 'Press Start 2P',monospace";
+    ctx.fillStyle='rgba(255,255,255,'+(0.7-i*0.15)+')';
+    ctx.fillText(String(e.pts).padStart(4,'0')+' LV'+e.lv, CW/2+10, 398+i*22);
+  });
+
+  if (blink()) gText('TAP → CLASSIFICA', CW/2, CH-38, 8, '#00ffcc', 8);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  SCHERMATA: LEADERBOARD
+// ════════════════════════════════════════════════════════════════
+function drawLeaderboard() {
+  ctx.fillStyle='#07071a'; ctx.fillRect(0,0,CW,CH);
+  sfondoGriglia(0.04);
+
+  pannello(20,20,CW-40,CH-40,12);
+
+  gText('CLASSIFICA', CW/2, 70, 11, '#ffd600', 14);
+  ctx.fillStyle='rgba(255,214,0,0.2)'; ctx.fillRect(50,82,CW-100,1);
+
+  if (leaderboard.length===0) {
+    ctx.font="8px 'Press Start 2P',monospace"; ctx.textAlign='center';
+    ctx.fillStyle='rgba(255,255,255,0.3)';
+    ctx.fillText('NESSUN RECORD ANCORA', CW/2, CH/2);
+    ctx.fillText('GIOCA E BATTI IL TUO', CW/2, CH/2+24);
+    ctx.fillText('PUNTEGGIO!', CW/2, CH/2+48);
+  } else {
+    const medals=['🥇','🥈','🥉','  4','  5'];
+    const colors=['#ffd600','#c0c0c0','#cd7f32','rgba(255,255,255,0.5)','rgba(255,255,255,0.4)'];
+    leaderboard.forEach((e,i) => {
+      const y = 130 + i*76;
+      // Riga di sfondo
+      ctx.fillStyle = i===0 ? 'rgba(255,214,0,0.07)' : 'rgba(255,255,255,0.03)';
+      roundRect(34,y-24,CW-68,60,6); ctx.fill();
+
+      ctx.font='22px serif'; ctx.textAlign='left';
+      ctx.fillText(typeof medals[i]==='string'&&medals[i].trim()===''?'':medals[i], 50, y+8);
+
+      ctx.font="12px 'Press Start 2P',monospace";
+      ctx.fillStyle=colors[i]; ctx.shadowColor=colors[i]; ctx.shadowBlur=i<3?10:0;
+      ctx.textAlign='center';
+      ctx.fillText(String(e.pts).padStart(4,'0'), CW/2+20, y+4);
+      ctx.shadowBlur=0;
+
+      ctx.font="6px 'Press Start 2P',monospace";
+      ctx.fillStyle='rgba(255,255,255,0.35)';
+      ctx.fillText('LV'+e.lv+' · '+e.data, CW/2+20, y+22);
+    });
+  }
+
+  ctx.fillStyle='rgba(0,255,204,0.12)'; ctx.fillRect(50,CH-68,CW-100,1);
+  if (blink()) gText('TAP PER IL MENU', CW/2, CH-32, 8, '#00ffcc', 8);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  GAME LOOP
+// ════════════════════════════════════════════════════════════════
+function gameLoop() {
+  update();
+  ctx.clearRect(0,0,CW,CH);
+
+  switch(stato) {
+    case 'START':       drawStart();       break;
+    case 'TUTORIAL':    drawTutorial();    break;
+    case 'GIOCO':       drawGioco();       break;
+    case 'PAUSA':       drawPausa();       break;
+    case 'LEVELUP':     drawLevelUp();     break;
+    case 'GAMEOVER':    drawGameOver();    break;
+    case 'LEADERBOARD': drawLeaderboard(); break;
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>
