@@ -5679,7 +5679,6 @@ window.togglePasswordVisibility = window.togglePasswordVisibility || function() 
 
       <!-- V60 DASHBOARD HERO — zero-friction first action -->
       <section id="v60-home-dashboard" class="v60-home-dashboard">
-        <button class="v60-start-workout" type="button" onclick="v60StartWorkout()">🏋️‍♂️ INIZIA ALLENAMENTO DI OGGI</button>
         <button class="v60-weight-btn" type="button" onclick="v60OpenWeight()">⚖️ Registra Peso</button>
       </section>
       <div class="stats-strip">
@@ -44027,7 +44026,7 @@ body.light-theme .v57-nav-arrow { background: var(--bg3); color: var(--text2); }
     if (!dash) {
       var html =
         '<section id="v60-home-dashboard" class="v60-home-dashboard">' +
-          '<button class="v60-start-workout" type="button" onclick="v60StartWorkout()">🏋️‍♂️ INIZIA ALLENAMENTO DI OGGI</button>' +
+          
           '<button class="v60-weight-btn" type="button" onclick="v60OpenWeight()">⚖️ Registra Peso</button>' +
         '</section>';
       if (stats) stats.insertAdjacentHTML('beforebegin', html);
@@ -44184,9 +44183,7 @@ body.light-theme .v57-nav-arrow { background: var(--bg3); color: var(--text2); }
 
   function bootV60(){
     window.__v60OpenWeight = openWeight;
-    window.__v60StartWorkout = smartStartWorkout;
     window.v60OpenWeight = function(){ return window.__v60OpenWeight(); };
-    window.v60StartWorkout = function(){ return window.__v60StartWorkout(); };
     buildHomeDashboard();
     hardLockProgressionLayer();
     patchExerciseDetail();
@@ -44210,14 +44207,6 @@ function v60OpenWeight(){
   var input = document.getElementById('awm-val');
   if (modal) modal.classList.add('open');
   if (input) setTimeout(function(){ input.focus(); }, 80);
-}
-function v60StartWorkout(){
-  if (typeof window.__v60StartWorkout === 'function') return window.__v60StartWorkout();
-  if (typeof window.startWorkoutFromHome === 'function') return window.startWorkoutFromHome();
-  if (typeof window.goPage === 'function') return window.goPage('page-workout');
-  document.querySelectorAll('.page').forEach(function(el){ el.classList.remove('active'); });
-  var page = document.getElementById('page-allenamento');
-  if (page) page.classList.add('active');
 }
 </script>
 
